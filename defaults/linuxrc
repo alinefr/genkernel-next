@@ -203,7 +203,9 @@ for x in ${CMDLINE}; do
             # kept for backward compatibility
             CRYPT_SWAPS=${x#*=}
         ;;
-
+        crypt_opts=*)
+            CRYPT_OPTS=${x#*=}
+        ;;
         crypt_roots=*)
             # The first entry will be the one that
             # is going to be mapped to ${REAL_ROOT}.

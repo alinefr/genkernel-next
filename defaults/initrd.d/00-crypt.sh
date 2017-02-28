@@ -57,6 +57,7 @@ _open_luks() {
     eval local luks_trim='"${CRYPT_'${ltype}'_TRIM}"'
 
     local dev_error=0 key_error=0 keydev_error=0
+    local cryptsetup_opts="${CRYPT_OPTS}"
     local mntkey="${KEY_MNT}/" cryptsetup_opts=""
 
     local exit_st=0 luks_device=
