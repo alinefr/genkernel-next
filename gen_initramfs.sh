@@ -111,6 +111,20 @@ append_base_layout() {
     date -u '+%Y%m%d-%H%M%S' > ${TEMP}/initramfs-base-temp/etc/build_date
     echo "Genkernel $GK_V" > ${TEMP}/initramfs-base-temp/etc/build_id
 
+    # The ZFS tools want the hostid in order to find the right pool.
+    # Assume the initramfs we're building is for this system, so copy
+    # our current hostid into it.
+    # We also have to deal with binary+endianness here: glibc's gethostid
+    # expects the value to be in binary using the native endianness.  But
+    # the coreutils hostid program doesn't show it in the right form.
+    local hostid
+    if file -L "${TEMP}/initramfs-base-temp/bin/sh" | grep -q 'MSB executable'; then
+	    hostid="$(hostid)"
+    else
+	    hostid="$(hostid | sed -E 's/(..)(..)(..)(..)/\4\3\2\1/')"
+    fi
+    printf "$(echo "${hostid}" | sed 's/\([0-9A-F]\{2\}\)/\\x\1/gI')" > ${TEMP}/initramfs-base-temp/etc/hostid
+
     cd "${TEMP}/initramfs-base-temp/"
     log_future_cpio_content
     find . -print | cpio ${CPIO_ARGS} --append -F "${CPIO}" \
@@ -364,7 +378,14 @@ append_zfs(){
     done
 
     # Copy binaries
-    copy_binaries "${TEMP}/initramfs-zfs-temp" /sbin/{mount.zfs,zfs,zpool}
+    # Include libgcc_s.so.1 to workaround zfsonlinux/zfs#4749
+    if type gcc-config 2>&1 1>/dev/null; then
+	    copy_binaries "${TEMP}/initramfs-zfs-temp" /sbin/{mount.zfs,zdb,zfs,zpool} \
+		    "/usr/lib/gcc/$(s=$(gcc-config -c); echo ${s%-*}/${s##*-})/libgcc_s.so.1"
+    else
+	    copy_binaries "${TEMP}/initramfs-zfs-temp" /sbin/{mount.zfs,zdb,zfs,zpool} \
+		    /usr/lib/gcc/*/*/libgcc_s.so.1
+    fi
 
     cd "${TEMP}/initramfs-zfs-temp/"
     log_future_cpio_content
@@ -616,8 +637,9 @@ append_udev() {
     udev_maybe_files="
         ${udev_dir}/rules.d/40-gentoo.rules
         ${udev_dir}/rules.d/99-systemd.rules
+        ${udev_dir}/rules.d/71-seat.rules
         /etc/modprobe.d/blacklist.conf
-        /lib/systemd/network/99-default.link
+        /usr/lib/systemd/network/99-default.link
     "
     is_maybe=0
     for f in ${udev_files} -- ${udev_maybe_files}; do
@@ -846,6 +868,23 @@ append_drm() {
     rm -r "${TEMP}/initramfs-drm-${KV}-temp/"
 }
 
+append_modprobed() {
+    local TDIR="${TEMP}/initramfs-modprobe.d-temp"
+    if [ -d "${TDIR}" ]
+    then
+      rm -r "${TDIR}"
+    fi
+    mkdir -p "${TDIR}/etc"
+    cp -r "${MODPROBEDIR}" "${TDIR}/etc/modprobe.d"
+
+    cd "${TDIR}"
+    log_future_cpio_content
+    find . -print | cpio ${CPIO_ARGS} --append -F "${CPIO}" \
+      || gen_die "compressing modprobe.d cpio"
+    cd "${TEMP}"
+    rm -rf "${TDIR}" > /dev/null
+}
+
 # check for static linked file with objdump
 is_static() {
     LANG="C" LC_ALL="C" objdump -T $1 2>&1 | grep "not a dynamic object" > /dev/null
@@ -1003,6 +1042,13 @@ create_initramfs() {
 
     append_data 'splash' "${SPLASH}"
 
+    if [ "$MODPROBEDIR" != '' ]
+    then
+        append_data 'modprobed'
+    else
+        print_info 1 "        >> Skipping modprobed copy"
+    fi
+
     append_data 'plymouth' "${PLYMOUTH}"
     isTrue "${PLYMOUTH}" && append_data 'drm'
 
@@ -1047,6 +1093,7 @@ create_initramfs() {
             lzma) compress_config='INITRAMFS_COMPRESSION_LZMA' ;;
             xz) compress_config='INITRAMFS_COMPRESSION_XZ' ;;
             lzo) compress_config='INITRAMFS_COMPRESSION_LZO' ;;
+            lz4) compress_config='INITRAMFS_COMPRESSION_LZ4' ;;
             *) compress_config='INITRAMFS_COMPRESSION_NONE' ;;
         esac
         # All N default except XZ, so there it gets used if the kernel does
@@ -1061,6 +1108,7 @@ CONFIG_INITRAMFS_COMPRESSION_BZIP2=n
 CONFIG_INITRAMFS_COMPRESSION_LZMA=n
 CONFIG_INITRAMFS_COMPRESSION_XZ=y
 CONFIG_INITRAMFS_COMPRESSION_LZO=n
+CONFIG_INITRAMFS_COMPRESSION_LZ4=n
 CONFIG_${compress_config}=y
 EOF
     else
@@ -1086,14 +1134,16 @@ EOF
             cmd_bzip2=$(type -p bzip2)
             cmd_gzip=$(type -p gzip)
             cmd_lzop=$(type -p lzop)
+            cmd_lz4=$(type -p lz4)
             pkg_xz='app-arch/xz-utils'
             pkg_lzma='app-arch/xz-utils'
             pkg_bzip2='app-arch/bzip2'
             pkg_gzip='app-arch/gzip'
             pkg_lzop='app-arch/lzop'
+            pkg_lz4='app-arch/lz4'
             local compression
             case ${COMPRESS_INITRD_TYPE} in
-                xz|lzma|bzip2|gzip|lzop) compression=${COMPRESS_INITRD_TYPE} ;;
+                xz|lzma|bzip2|gzip|lzop|lz4) compression=${COMPRESS_INITRD_TYPE} ;;
                 lzo) compression=lzop ;;
                 best|fastest)
                     for tuple in \
@@ -1101,7 +1151,9 @@ EOF
                             'CONFIG_RD_LZMA  cmd_lzma  lzma' \
                             'CONFIG_RD_BZIP2 cmd_bzip2 bzip2' \
                             'CONFIG_RD_GZIP  cmd_gzip  gzip' \
-                            'CONFIG_RD_LZO   cmd_lzop  lzop'; do
+                            'CONFIG_RD_LZO   cmd_lzop  lzop' \
+                            'CONFIG_RD_LZ4   cmd_lz4  lz4' \
+                            ; do
                         set -- ${tuple}
                         kernel_option=$1
                         cmd_variable_name=$2
@@ -1128,6 +1180,7 @@ EOF
                 bzip2) compress_ext='.bz2' compress_cmd="${cmd_bzip2} -z -f -9" ;;
                 gzip) compress_ext='.gz' compress_cmd="${cmd_gzip} -f -9" ;;
                 lzop) compress_ext='.lzo' compress_cmd="${cmd_lzop} -f -9" ;;
+                lz4) compress_ext='.lz4' compress_cmd="${cmd_lz4} -f -9" ;;
             esac
             if [ -n "${compression}" ]; then
                 print_info 1 "        >> Compressing cpio data (${compress_ext})..."
@@ -1145,7 +1198,7 @@ EOF
         then
             copy_image_with_preserve "initramfs" \
                 "${TMPDIR}/initramfs-${KV}" \
-                "initramfs-${KNAME}-${ARCH}-${KV}"
+                "initramfs-${KNAME}-${ARCH}-${KV}${KAPPENDNAME}"
         fi
     fi
 }

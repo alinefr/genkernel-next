@@ -75,6 +75,7 @@ determine_real_args() {
     set_config_with_override STRING KERNEL_DIR           CMD_KERNEL_DIR           "${DEFAULT_KERNEL_SOURCE}"
     set_config_with_override BOOL   KERNEL_SOURCES       CMD_KERNEL_SOURCES       "yes"
     set_config_with_override STRING KNAME                CMD_KERNNAME             "genkernel"
+    set_config_with_override STRING KAPPENDNAME          CMD_APPENDNAME           ""
 
     set_config_with_override STRING COMPRESS_INITRD      CMD_COMPRESS_INITRD      "$DEFAULT_COMPRESS_INITRD"
     set_config_with_override STRING COMPRESS_INITRD_TYPE CMD_COMPRESS_INITRD_TYPE "$DEFAULT_COMPRESS_INITRD_TYPE"
@@ -90,7 +91,7 @@ determine_real_args() {
 
     set_config_with_override STRING BOOTDIR              CMD_BOOTDIR              "/boot"
     set_config_with_override STRING KERNEL_OUTPUTDIR     CMD_KERNEL_OUTPUTDIR     "${KERNEL_DIR}"
-    set_config_with_override STRING MODPROBEDIR          CMD_MODPROBEDIR          "/etc/modprobe.d"
+    set_config_with_override STRING MODPROBEDIR          CMD_MODPROBEDIR
 
     set_config_with_override BOOL   SPLASH               CMD_SPLASH
     set_config_with_override BOOL   PLYMOUTH             CMD_PLYMOUTH
